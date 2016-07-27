@@ -42,6 +42,11 @@ Notes:
 
 from __future__ import absolute_import
 
+# import python libs
+import logging
+
+log = logging.getLogger(__name__)
+
 # import salt libs
 from salt.modules.tomcat import _extract_war_version
 
@@ -90,6 +95,10 @@ def war_deployed(name,
 
         .. versionadded:: 2015.8.6
 
+        Use `False` to prevent guessing version and keeping it blank.
+
+        .. versionadded:: 2016.8.0
+
     Example:
 
     .. code-block:: yaml
@@ -103,12 +112,17 @@ def war_deployed(name,
     '''
     # Prepare
     ret = {'name': name,
-       'result': True,
-       'changes': {},
-       'comment': ''}
+           'result': True,
+           'changes': {},
+           'comment': ''}
 
-    if not version:
-        version = _extract_war_version(war)
+    # if version is defined or False, we don't want to overwrite
+    if version == '':
+        version = _extract_war_version(war) or ""
+    elif not version:
+        version = ''
+
+    log.debug('Registered version is {0}'.format(version))
 
     webapps = __salt__['tomcat.ls'](url, timeout)
     deploy = False
@@ -117,17 +131,23 @@ def war_deployed(name,
 
     # Determine what to do
     try:
-        if not webapps[name]['version'].endswith(version) or force:
+        # Using `endswith` on the supposed string will cause Exception if no object
+        if not webapps[name]['version'].endswith(version) \
+                or webapps[name]['version'] != version \
+                or force:
             deploy = True
             undeploy = True
-            ret['changes']['undeploy'] = ('undeployed {0} in version {1}'.
-                    format(name, webapps[name]['version']))
-            ret['changes']['deploy'] = ('will deploy {0} in version {1}'.
-                    format(name, version))
+            ret['changes']['undeploy'] = ('undeployed {0} with {1}'.
+                                          format(name,
+                                                 'version ' + webapps[name]['version']
+                                                 if webapps[name]['version']
+                                                 else 'no version'))
+            ret['changes']['deploy'] = ('will deploy {0} with {1}'.
+                                        format(name, 'version ' + version if version else 'no version'))
         else:
             deploy = False
-            ret['comment'] = ('{0} in version {1} is already deployed'.
-                    format(name, version))
+            ret['comment'] = ('{0} with {1} is already deployed'.
+                              format(name, 'version ' + version if version else 'no version'))
             if webapps[name]['mode'] != 'running':
                 ret['changes']['start'] = 'starting {0}'.format(name)
                 status = False
@@ -135,8 +155,9 @@ def war_deployed(name,
                 return ret
     except Exception:
         deploy = True
-        ret['changes']['deploy'] = ('deployed {0} in version {1}'.format(name,
-            version))
+        ret['changes']['deploy'] = ('deployed {0} with {1}'.
+                                    format(name,
+                                           'version ' + version if version else 'no version'))
 
     # Test
     if __opts__['test']:
@@ -147,7 +168,7 @@ def war_deployed(name,
     if deploy is False:
         if status is False:
             ret['comment'] = __salt__['tomcat.start'](name, url,
-                    timeout=timeout)
+                                                      timeout=timeout)
             ret['result'] = ret['comment'].startswith('OK')
         return ret
 
@@ -166,14 +187,15 @@ def war_deployed(name,
                                                url,
                                                __env__,
                                                timeout,
-                                               temp_war_location=temp_war_location)
+                                               temp_war_location,
+                                               version)
 
     # Return
     if deploy_res.startswith('OK'):
         ret['result'] = True
         ret['comment'] = str(__salt__['tomcat.ls'](url, timeout)[name])
         ret['changes']['deploy'] = 'deployed {0} in version {1}'.format(name,
-                version)
+                                                                        version)
     else:
         ret['result'] = False
         ret['comment'] = deploy_res
@@ -220,11 +242,11 @@ def wait(name, url='http://localhost:8080/manager', timeout=180):
 
     result = __salt__['tomcat.status'](url, timeout)
     ret = {'name': name,
-       'result': result,
-       'changes': {},
-       'comment': ('tomcat manager is ready' if result
-               else 'tomcat manager is not ready')
-       }
+           'result': result,
+           'changes': {},
+           'comment': ('tomcat manager is ready' if result
+                       else 'tomcat manager is not ready')
+           }
 
     return ret
 
@@ -239,17 +261,17 @@ def mod_watch(name, url='http://localhost:8080/manager', timeout=180):
     result = msg.startswith('OK')
 
     ret = {'name': name,
-       'result': result,
-       'changes': {name: result},
-       'comment': msg
-       }
+           'result': result,
+           'changes': {name: result},
+           'comment': msg
+           }
 
     return ret
 
 
 def undeployed(name,
-                 url='http://localhost:8080/manager',
-                 timeout=180):
+               url='http://localhost:8080/manager',
+               timeout=180):
     '''
     Enforce that the WAR will be un-deployed from the server
 
@@ -273,9 +295,9 @@ def undeployed(name,
 
     # Prepare
     ret = {'name': name,
-       'result': True,
-       'changes': {},
-       'comment': ''}
+           'result': True,
+           'changes': {},
+           'comment': ''}
 
     if not __salt__['tomcat.status'](url, timeout):
         ret['comment'] = 'Tomcat Manager does not response'
